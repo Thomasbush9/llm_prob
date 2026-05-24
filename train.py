@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import optax
 import wandb
+import yaml
 from flax import nnx, serialization
 
 from data import (
@@ -20,29 +21,63 @@ from data import (
 from model import Transformer
 
 
+DEFAULT_CONFIG = {
+    "steps": 1000,
+    "batch_size": 32,
+    "seq_len": 128,
+    "num_value_bins": 128,
+    "num_param_bins": 64,
+    "model_dim": 64,
+    "hidden_dim": 128,
+    "num_heads": 4,
+    "num_layers": 2,
+    "dropout": 0.0,
+    "lr": 3e-4,
+    "weight_decay": 1e-2,
+    "eval_specs": 64,
+    "eval_batch_size": 32,
+    "eval_every": 100,
+    "log_every": 10,
+    "seed": 0,
+    "out_dir": "artifacts/debug_run",
+    "wandb": False,
+    "wandb_project": "llm-probs",
+}
+
+
+def add_config_arg(parser, name, value):
+    arg_name = f"--{name.replace('_', '-')}"
+    if isinstance(value, bool):
+        parser.add_argument(arg_name, action="store_true", default=None)
+    else:
+        parser.add_argument(arg_name, type=type(value), default=None)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--steps", type=int, default=1000)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--seq-len", type=int, default=128)
-    parser.add_argument("--num-value-bins", type=int, default=128)
-    parser.add_argument("--num-param-bins", type=int, default=64)
-    parser.add_argument("--model-dim", type=int, default=64)
-    parser.add_argument("--hidden-dim", type=int, default=128)
-    parser.add_argument("--num-heads", type=int, default=4)
-    parser.add_argument("--num-layers", type=int, default=2)
-    parser.add_argument("--dropout", type=float, default=0.0)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-2)
-    parser.add_argument("--eval-specs", type=int, default=64)
-    parser.add_argument("--eval-batch-size", type=int, default=32)
-    parser.add_argument("--eval-every", type=int, default=100)
-    parser.add_argument("--log-every", type=int, default=10)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--out-dir", type=str, default="artifacts/debug_run")
-    parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb-project", type=str, default="llm-probs")
-    return parser.parse_args()
+    parser.add_argument("--config", type=str, default="config.yaml")
+    for name, value in DEFAULT_CONFIG.items():
+        add_config_arg(parser, name, value)
+
+    args = parser.parse_args()
+    config = DEFAULT_CONFIG.copy()
+    config_path = Path(args.config)
+    if config_path.exists():
+        with config_path.open() as f:
+            yaml_config = yaml.safe_load(f) or {}
+        unknown_keys = set(yaml_config) - set(DEFAULT_CONFIG)
+        if unknown_keys:
+            raise ValueError(f"unknown config keys in {config_path}: {sorted(unknown_keys)}")
+        config.update(yaml_config)
+
+    cli_config = {
+        key: value
+        for key, value in vars(args).items()
+        if key != "config" and value is not None
+    }
+    config.update(cli_config)
+    config["config"] = str(config_path)
+    return argparse.Namespace(**config)
 
 
 def make_batch(iterator, batch_size, tokenizer):

@@ -1,0 +1,28 @@
+# Default training config. CLI flags override these values.
+
+steps: 1000
+batch_size: 16
+seq_len: 512
+
+num_value_bins: 128
+num_param_bins: 64
+
+model_dim: 64
+hidden_dim: 128
+num_heads: 4
+num_layers: 2
+dropout: 0.1
+
+lr: 0.0003
+weight_decay: 0.01
+
+eval_specs: 128
+eval_batch_size: 16
+eval_every: 100
+log_every: 10
+
+seed: 0
+out_dir: artifacts/decoder_512_baseline
+
+wandb: false
+wandb_project: llm-probs

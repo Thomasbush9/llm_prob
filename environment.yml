@@ -3,9 +3,11 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
+  - cuda-version=12
   - jax
-  - jaxlib=*=*cuda12*
+  - jaxlib=*=*cuda*
   - numpy
   - matplotlib
   - tqdm
   - ipykernel
+  - wandb
