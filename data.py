@@ -312,6 +312,7 @@ def batch_from_items(items, tokenizer):
     labels = batch[:, 1:]
     positions = np.arange(labels.shape[1])
     loss_mask = positions[None, :] >= (tokenizer.prefix_len - 1)
+    loss_mask = np.broadcast_to(loss_mask, labels.shape)
     return inputs, labels, loss_mask.astype(np.float32)
 
 

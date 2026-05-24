@@ -1,0 +1,49 @@
+Host arena
+    HostName 64.228.168.35
+    User root
+    IdentityFile ~/.ssh/arena-k
+    Port 49586
+
+Host vast
+    HostName 74.48.78.46
+    User root
+    IdentityFile ~/.ssh/arena-k
+    Port 36505
+
+Host cannon
+    HostName login.rc.fas.harvard.edu
+    User tbush
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%C
+    ControlPersist 8h
+
+Host macmini
+  HostName thoms-mac-mini
+  ControlPersist 8h
+  ControlMaster auto 
+  User thom
+
+Host cannon06
+    HostName holylogin06.rc.fas.harvard.edu
+    User tbush
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%C
+    ControlPersist 8h
+
+Host holy*
+    User tbush
+    ProxyJump cannon
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%C
+    ControlPersist 8h
+
+Host clawdbot
+    HostName 192.168.64.2
+    User clawdbot
+    IdentityFile ~/.ssh/id_ed25519_clawdbot
+
+Host github.com-personal
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_rsa
+    IdentitiesOnly yes
