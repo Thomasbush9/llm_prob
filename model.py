@@ -127,7 +127,7 @@ class Transformer(nnx.Module):
             features=model_dim,
             rngs=rng,
         )
-        self.layers = nnx.List([
+        self.layers = nnx.data([
             TransformerLayer(
                 in_dim=model_dim,
                 hidden_dim=hidden_dim,
