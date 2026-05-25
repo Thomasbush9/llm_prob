@@ -160,9 +160,9 @@ class BinnedDistTokenizer:
     value_range: tuple = (0.0, 100.0)
     sigma_range: tuple = (1.0, 15.0)
     w_range: tuple = (0.0, 1.0)
-    num_value_bins: int = 128
-    num_param_bins: int = 64
-    num_w_bins: int = 64
+    num_value_bins: int = 512
+    num_param_bins: int = 128
+    num_w_bins: int = 128
 
     pad_token: int = 0
     bos_token: int = 1

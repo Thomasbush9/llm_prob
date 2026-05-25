@@ -63,9 +63,9 @@ sigma tokens:  sigma_offset  ... w_offset - 1
 w tokens:      w_offset      ... vocab_size - 1
 ```
 
-For example, with `num_value_bins=16`, a sample value in `[0, 100]` maps to one
-of 16 `X_BIN_*` tokens. With `num_param_bins=8`, `mu` and `sigma` map to 8 bins
-each.
+For example, with `num_value_bins=512`, a sample value in `[0, 100]` maps to one
+of 512 `X_BIN_*` tokens. With `num_param_bins=128`, `mu` and `sigma` map to 128
+bins each.
 
 ## Batch Construction
 
@@ -123,5 +123,5 @@ Useful variants:
 
 ```bash
 uv run python example_batch.py --batch-size 2 --seq-len 8 --seed 0
-uv run python example_batch.py --num-value-bins 128 --num-param-bins 64
+uv run python example_batch.py --num-value-bins 512 --num-param-bins 128 --num-w-bins 128
 ```

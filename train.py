@@ -24,9 +24,10 @@ from model import Transformer
 DEFAULT_CONFIG = {
     "steps": 1000,
     "batch_size": 32,
-    "seq_len": 128,
-    "num_value_bins": 128,
-    "num_param_bins": 64,
+    "seq_len": 512,
+    "num_value_bins": 512,
+    "num_param_bins": 128,
+    "num_w_bins": 128,
     "model_dim": 64,
     "hidden_dim": 128,
     "num_heads": 4,
@@ -147,6 +148,7 @@ def main():
     tokenizer = BinnedDistTokenizer(
         num_value_bins=args.num_value_bins,
         num_param_bins=args.num_param_bins,
+        num_w_bins=args.num_w_bins,
     )
     priors = DistPriors()
     eval_specs = make_eval_specs(priors, args.eval_specs, args.seed + 1, tokenizer)

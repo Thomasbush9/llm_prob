@@ -115,6 +115,7 @@ class Transformer(nnx.Module):
                  num_layers,
                  dropout,
                  use_bias=True,
+                 use_rope=True,
                  rng:nnx.Rngs=None,
                  **kwargs):
         self.vocab_size = vocab_size
@@ -132,6 +133,7 @@ class Transformer(nnx.Module):
                 hidden_dim=hidden_dim,
                 num_heads=num_heads,
                 dropout=dropout,
+                use_rope=use_rope,
                 use_bias=use_bias,
                 rng=rng,
             )
