@@ -53,28 +53,61 @@ def generate_samples(model, tokenizer, mu, sigma, n_samples=10, *,
                      mode='completion', temperature=1.0, max_new_tokens=None,
                      plausible_range=10.0):
     """One generation -> (parsed_numbers, n_malformed, raw_text)."""
+    all_nums, malformed, texts = generate_samples_batch(
+        model, tokenizer, mu, sigma,
+        n_runs=1, n_samples=n_samples, mode=mode, temperature=temperature,
+        max_new_tokens=max_new_tokens, plausible_range=plausible_range,
+        batch_size=1,
+    )
+    return all_nums, malformed, texts[0]
+
+
+@torch.no_grad()
+def generate_samples_batch(model, tokenizer, mu, sigma, *,
+                           n_runs, n_samples=10, mode='completion',
+                           temperature=1.0, max_new_tokens=None,
+                           plausible_range=10.0, batch_size=None):
+    """`n_runs` independent samplings of the same prompt, batched.
+
+    Uses `num_return_sequences` so a single forward pass yields N independent
+    sampled continuations — orders of magnitude faster than calling generate
+    N times at batch=1 on a GPU.
+
+    Returns (parsed_nums_concat, malformed_total, raw_texts_list).
+    """
     prompt = build_prompt(tokenizer, mu, sigma, n_samples, mode=mode)
     inputs = tokenizer(prompt, return_tensors='pt').to(model.device)
     prompt_len = inputs.input_ids.shape[1]
 
     if max_new_tokens is None:
         max_new_tokens = n_samples * 10 + 16
+    if batch_size is None or batch_size <= 0:
+        batch_size = n_runs
 
-    out = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        do_sample=True,
-        temperature=temperature,
-        top_p=1.0,
-        pad_token_id=tokenizer.eos_token_id,
-    )
-    gen_ids = out[0, prompt_len:]
-    text = tokenizer.decode(gen_ids, skip_special_tokens=True)
-
-    # Cut at first newline — base models often continue with extra text.
-    text_for_parse = text.split('\n')[0]
-    nums, malformed = parse_samples(text_for_parse, plausible_range=plausible_range)
-    return nums, malformed, text
+    all_nums, malformed_total, raw_texts = [], 0, []
+    remaining = n_runs
+    while remaining > 0:
+        bs = min(batch_size, remaining)
+        out = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=temperature,
+            top_p=1.0,
+            num_return_sequences=bs,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        gen_ids = out[:, prompt_len:]
+        texts = tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
+        for text in texts:
+            text_for_parse = text.split('\n')[0]
+            nums, bad = parse_samples(text_for_parse,
+                                       plausible_range=plausible_range)
+            all_nums.extend(nums)
+            malformed_total += bad
+            raw_texts.append(text)
+        remaining -= bs
+    return all_nums, malformed_total, raw_texts
 
 
 @torch.no_grad()
@@ -82,24 +115,20 @@ def conditional_eval_llm(model, tokenizer, *,
                          mu_grid=(-2.5, -1.5, -0.5, 0.5, 1.5, 2.5),
                          sigma=1.0, n_runs=50, n_samples=10,
                          temperature=1.0, mode='completion', verbose=True,
-                         on_record=None):
+                         on_record=None, batch_size=None):
     """Same record shape as eval.conditional_eval — plug into the same plots.
 
     `on_record(rec, results_so_far)` is invoked after each mu so callers can
-    checkpoint incrementally.
+    checkpoint incrementally. `batch_size` caps `num_return_sequences` per
+    generate call (defaults to n_runs — i.e. one batched call per mu).
     """
     results = []
     for mu in mu_grid:
-        all_nums, malformed, raw_texts = [], 0, []
-        for _ in range(n_runs):
-            nums, bad, text = generate_samples(
-                model, tokenizer, mu, sigma,
-                n_samples=n_samples, mode=mode, temperature=temperature,
-            )
-            all_nums.extend(nums)
-            malformed += bad
-            raw_texts.append(text)
-
+        all_nums, malformed, raw_texts = generate_samples_batch(
+            model, tokenizer, mu, sigma,
+            n_runs=n_runs, n_samples=n_samples, mode=mode,
+            temperature=temperature, batch_size=batch_size,
+        )
         all_nums = np.array(all_nums, dtype=float)
         clean = all_nums[np.abs(all_nums - mu) < 5.0]
         expected = n_runs * n_samples

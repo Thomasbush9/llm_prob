@@ -87,8 +87,16 @@ def main():
     ap.add_argument('--n-samples', type=int, default=10)
     ap.add_argument('--temperature', type=float, default=1.0)
     ap.add_argument('--dtype', choices=['bf16', 'fp16', 'fp32'], default='bf16')
-    ap.add_argument('--device-map', default='auto',
-                    help="passed to from_pretrained; 'auto' uses accelerate")
+    ap.add_argument('--device-map', default=None,
+                    help="passed to from_pretrained (e.g. 'auto'). Default: "
+                         "load on CPU then .to(--device) to avoid accelerate "
+                         "offload hooks for small models.")
+    ap.add_argument('--device', default='cuda',
+                    help="device to move the model to when --device-map is "
+                         "unset. Use 'cuda', 'cuda:0', or 'cpu'.")
+    ap.add_argument('--batch-size', type=int, default=0,
+                    help="num_return_sequences per generate call. 0 = run all "
+                         "n_runs in one batched call per mu (recommended on GPU).")
     args = ap.parse_args()
 
     cache_dir = None
@@ -117,14 +125,21 @@ def main():
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    print(f"Loading model: {args.model}  dtype={args.dtype}  device_map={args.device_map}")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        dtype=dtype,
-        device_map=args.device_map,
-    )
+    print(f"Loading model: {args.model}  dtype={args.dtype}  "
+          f"device_map={args.device_map}  device={args.device}")
+    load_kwargs = {'dtype': dtype}
+    if args.device_map is not None:
+        load_kwargs['device_map'] = args.device_map
+    model = AutoModelForCausalLM.from_pretrained(args.model, **load_kwargs)
+    if args.device_map is None:
+        model = model.to(args.device)
     model.eval()
-    print(f"Model device: {model.device}  param dtype: {next(model.parameters()).dtype}")
+    param_device = next(model.parameters()).device
+    print(f"Model device: {model.device}  param device: {param_device}  "
+          f"param dtype: {next(model.parameters()).dtype}")
+    if param_device.type != 'cuda':
+        print("!! warning: model parameters are not on CUDA — generation will "
+              "be CPU-bound. Pass --device cuda (or check torch.cuda.is_available()).")
 
     print(f"\nRunning conditional eval: mu_grid={args.mu_grid}  sigma={args.sigma}  "
           f"n_runs={args.n_runs}  n_samples={args.n_samples}  mode={args.mode}\n")
@@ -143,6 +158,7 @@ def main():
         n_samples=args.n_samples,
         temperature=args.temperature,
         mode=args.mode,
+        batch_size=args.batch_size or None,
         on_record=_checkpoint,
     )
 
