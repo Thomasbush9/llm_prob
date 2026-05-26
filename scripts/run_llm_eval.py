@@ -19,12 +19,19 @@ Outputs:
 """
 
 import argparse
+import functools
 import json
 import os
 import pickle
+import sys
 import tempfile
 import time
 from pathlib import Path
+
+
+# Line-buffered output so cluster logs / `tee` show progress in real time
+# instead of dumping everything after the run finishes.
+print = functools.partial(print, flush=True)  # noqa: A001
 
 
 SUMMARY_KEYS = ('mu_requested', 'sigma_requested', 'mu_observed',
@@ -104,6 +111,9 @@ def main():
                          "stalls the GPU; leave at 0 unless you need it.")
     ap.add_argument('--no-warmup', action='store_true',
                     help="skip the warmup generate() call before the main loop")
+    ap.add_argument('--smoke-test', action='store_true',
+                    help="load model, run one tiny generate, report timing, exit. "
+                         "Use to isolate GPU perf from the full eval.")
     args = ap.parse_args()
 
     cache_dir = None
@@ -121,9 +131,25 @@ def main():
 
     # Imports after env vars are set so HF picks them up.
     import torch
+    import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    from llm_prob.llm_eval import conditional_eval_llm
+    from llm_prob.llm_eval import conditional_eval_llm, generate_samples_batch
+
+    print(f"python={sys.version.split()[0]}  torch={torch.__version__}  "
+          f"cuda={torch.version.cuda}  transformers={transformers.__version__}")
+    print(f"torch.cuda.is_available()={torch.cuda.is_available()}  "
+          f"device_count={torch.cuda.device_count()}")
+    if torch.cuda.is_available():
+        print(f"  device 0: {torch.cuda.get_device_name(0)}")
+    print(f"HF_HOME={os.environ.get('HF_HOME')}  "
+          f"HF_HUB_CACHE={os.environ.get('HF_HUB_CACHE')}")
+
+    want_cuda = args.device.startswith('cuda') and args.device_map is None
+    if want_cuda and not torch.cuda.is_available():
+        sys.exit(f"!! requested --device {args.device} but torch.cuda.is_available() "
+                 "is False. Either allocate a GPU (e.g. salloc/srun with --gres=gpu:1) "
+                 "or pass --device cpu. Refusing to silently fall back to CPU.")
 
     dtype = {'bf16': torch.bfloat16, 'fp16': torch.float16, 'fp32': torch.float32}[args.dtype]
 
@@ -146,13 +172,15 @@ def main():
     model.eval()
     print(f"  model loaded + on device in {time.perf_counter() - t0:.2f}s")
     param_device = next(model.parameters()).device
+    param_dtype = next(model.parameters()).dtype
     print(f"Model device: {model.device}  param device: {param_device}  "
-          f"param dtype: {next(model.parameters()).dtype}")
-    print(f"  torch.cuda.is_available()={torch.cuda.is_available()}  "
-          f"device_count={torch.cuda.device_count()}")
+          f"param dtype: {param_dtype}")
+    if param_dtype != dtype:
+        print(f"!! warning: requested dtype={dtype} but params are {param_dtype}. "
+              "The dtype kwarg may not have been respected by from_pretrained.")
     if param_device.type != 'cuda':
         print("!! warning: model parameters are not on CUDA — generation will "
-              "be CPU-bound. Pass --device cuda (or check torch.cuda.is_available()).")
+              "be CPU-bound.")
 
     if not args.no_warmup and param_device.type == 'cuda':
         print("Warmup generate() (kernel autotune)...")
@@ -162,6 +190,28 @@ def main():
                            pad_token_id=tokenizer.eos_token_id)
         torch.cuda.synchronize()
         print(f"  warmup done in {time.perf_counter() - t0:.2f}s")
+
+    if args.smoke_test:
+        print("\n=== smoke test ===")
+        print("Single batched generate call: mu=0, n_runs=n_runs, n_samples=n_samples")
+        if param_device.type == 'cuda':
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        nums, bad, texts = generate_samples_batch(
+            model, tokenizer, mu=0.0, sigma=args.sigma,
+            n_runs=args.n_runs, n_samples=args.n_samples, mode=args.mode,
+            temperature=args.temperature,
+            batch_size=args.batch_size or None,
+        )
+        if param_device.type == 'cuda':
+            torch.cuda.synchronize()
+        dt = time.perf_counter() - t0
+        print(f"  generate+decode: {dt:.2f}s for n_runs={args.n_runs} "
+              f"(batch_size={args.batch_size or args.n_runs}, "
+              f"max_new_tokens={args.n_samples * 10 + 16})")
+        print(f"  parsed {len(nums)} numbers, {bad} malformed")
+        print(f"  sample text[0]: {texts[0][:200]!r}")
+        return
 
     print(f"\nRunning conditional eval: mu_grid={args.mu_grid}  sigma={args.sigma}  "
           f"n_runs={args.n_runs}  n_samples={args.n_samples}  mode={args.mode}  "
