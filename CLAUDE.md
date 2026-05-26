@@ -14,21 +14,23 @@ Planned pipeline (per README):
 
 ## Current state
 
-Scaffolding only. `main.py` is a hello-world; `data.py` and `eval.py` are empty; `utils.py` contains a stub `generate_discrete_guassian(mu, sigma, rng=(0,100), N=512)` (note: typo in name, no body). When extending, expect to be defining the module conventions for the first time — no prior structure to match.
+`src/llm_prob/` holds the small-model pipeline: char-level `tokenization.py`, distribution dataset builders in `data.py`, `TinyGPT` in `model.py`, `train.py`, and `eval.py` (`conditional_eval` reports parse rate, observed mu/sigma, KS vs. the target normal). LLM side: `llm_eval.py` mirrors `conditional_eval` for any HF causal LM, and `scripts/download_model.py` + `scripts/run_llm_eval.py` cover snapshot download and a first run on the cluster (Qwen2.5-3B as the starting model, with TransformerLens analysis planned next).
 
 ## Environment
 
 - Python 3.12 (`.python-version`), managed with **uv**. `uv.lock` is checked in.
-- Core deps: `jax`, `numpy`, `matplotlib`, `tqdm`, `ipykernel`.
-- Run anything via `uv run …` so the right interpreter and lock are used. Examples:
-  - `uv run python main.py`
-  - `uv run python -c "from utils import generate_discrete_guassian; ..."`
+- Core deps: `torch`, `transformers`, `accelerate`, `huggingface_hub`, `transformer_lens`, `numpy`, `scipy`, `matplotlib`, `tqdm`, `ipykernel`. No JAX.
+- Run anything via `uv run …` so the right interpreter and lock are used.
 - Add a dependency: `uv add <pkg>` (do not hand-edit `pyproject.toml` for deps).
-- No tests, linter, or formatter configured yet. Don't invent a `pytest`/`ruff` command pretending it exists — set one up explicitly if needed.
+- Pytest is configured (`pytest>=9.0.3` in the `dev` group); no linter/formatter yet.
 
 ## Framework choice
 
-`jax` is the listed numerics dep, not torch. Default new model / training code to JAX (+ likely `flax`/`optax` when added) unless the user says otherwise.
+PyTorch throughout. No JAX/Flax. New model code should default to torch.
+
+## Cluster / HF cache
+
+Cluster home dirs are quota-limited — never let HF cache to `~/.cache`. Both `download_model.py` and `run_llm_eval.py` take `--cache-dir` and set `HF_HOME`/`HF_HUB_CACHE` so weights land on scratch.
 
 ## Vault counterpart
 
