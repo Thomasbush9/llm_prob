@@ -10,6 +10,8 @@ Two prompting modes:
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import torch
 from scipy import stats
@@ -123,12 +125,19 @@ def conditional_eval_llm(model, tokenizer, *,
     generate call (defaults to n_runs — i.e. one batched call per mu).
     """
     results = []
+    cuda_avail = torch.cuda.is_available()
     for mu in mu_grid:
+        if cuda_avail:
+            torch.cuda.synchronize()
+        t_gen = time.perf_counter()
         all_nums, malformed, raw_texts = generate_samples_batch(
             model, tokenizer, mu, sigma,
             n_runs=n_runs, n_samples=n_samples, mode=mode,
             temperature=temperature, batch_size=batch_size,
         )
+        if cuda_avail:
+            torch.cuda.synchronize()
+        gen_dt = time.perf_counter() - t_gen
         all_nums = np.array(all_nums, dtype=float)
         clean = all_nums[np.abs(all_nums - mu) < 5.0]
         expected = n_runs * n_samples
@@ -153,7 +162,8 @@ def conditional_eval_llm(model, tokenizer, *,
                   f"mu_obs={rec['mu_observed']:+.3f}  "
                   f"sigma_obs={rec['std_observed']:.3f}  "
                   f"parse={rec['parse_rate']:.1%}  bad={rec['malformed']}  "
-                  f"KS={rec['ks_stat']:.3f}  n={rec['n_clean']}")
+                  f"KS={rec['ks_stat']:.3f}  n={rec['n_clean']}  "
+                  f"[gen+decode {gen_dt:.2f}s]")
         if on_record is not None:
             on_record(rec, results)
     return results

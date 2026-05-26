@@ -23,6 +23,7 @@ import json
 import os
 import pickle
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -97,6 +98,12 @@ def main():
     ap.add_argument('--batch-size', type=int, default=0,
                     help="num_return_sequences per generate call. 0 = run all "
                          "n_runs in one batched call per mu (recommended on GPU).")
+    ap.add_argument('--checkpoint-every', type=int, default=0,
+                    help="checkpoint to disk every N mus (0 = only at end). "
+                         "Per-mu checkpointing on slow shared filesystems "
+                         "stalls the GPU; leave at 0 unless you need it.")
+    ap.add_argument('--no-warmup', action='store_true',
+                    help="skip the warmup generate() call before the main loop")
     args = ap.parse_args()
 
     cache_dir = None
@@ -121,12 +128,15 @@ def main():
     dtype = {'bf16': torch.bfloat16, 'fp16': torch.float16, 'fp32': torch.float32}[args.dtype]
 
     print(f"Loading tokenizer: {args.model}")
+    t0 = time.perf_counter()
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    print(f"  tokenizer loaded in {time.perf_counter() - t0:.2f}s")
 
     print(f"Loading model: {args.model}  dtype={args.dtype}  "
           f"device_map={args.device_map}  device={args.device}")
+    t0 = time.perf_counter()
     load_kwargs = {'dtype': dtype}
     if args.device_map is not None:
         load_kwargs['device_map'] = args.device_map
@@ -134,22 +144,47 @@ def main():
     if args.device_map is None:
         model = model.to(args.device)
     model.eval()
+    print(f"  model loaded + on device in {time.perf_counter() - t0:.2f}s")
     param_device = next(model.parameters()).device
     print(f"Model device: {model.device}  param device: {param_device}  "
           f"param dtype: {next(model.parameters()).dtype}")
+    print(f"  torch.cuda.is_available()={torch.cuda.is_available()}  "
+          f"device_count={torch.cuda.device_count()}")
     if param_device.type != 'cuda':
         print("!! warning: model parameters are not on CUDA — generation will "
               "be CPU-bound. Pass --device cuda (or check torch.cuda.is_available()).")
 
+    if not args.no_warmup and param_device.type == 'cuda':
+        print("Warmup generate() (kernel autotune)...")
+        t0 = time.perf_counter()
+        warm = tokenizer("Hello", return_tensors='pt').to(param_device)
+        _ = model.generate(**warm, max_new_tokens=8, do_sample=False,
+                           pad_token_id=tokenizer.eos_token_id)
+        torch.cuda.synchronize()
+        print(f"  warmup done in {time.perf_counter() - t0:.2f}s")
+
     print(f"\nRunning conditional eval: mu_grid={args.mu_grid}  sigma={args.sigma}  "
-          f"n_runs={args.n_runs}  n_samples={args.n_samples}  mode={args.mode}\n")
+          f"n_runs={args.n_runs}  n_samples={args.n_samples}  mode={args.mode}  "
+          f"checkpoint_every={args.checkpoint_every}\n")
+
+    mu_counter = {'n': 0}
 
     def _checkpoint(_rec, results_so_far):
+        mu_counter['n'] += 1
+        if args.checkpoint_every <= 0:
+            return
+        if mu_counter['n'] % args.checkpoint_every != 0:
+            return
+        t0 = time.perf_counter()
         try:
             _save(out_path, args, results_so_far, fallback_dir=fallback_dir)
         except OSError as e:
             print(f"!! checkpoint save failed ({e}); continuing in-memory")
+            return
+        print(f"  [checkpoint after mu#{mu_counter['n']} in "
+              f"{time.perf_counter() - t0:.2f}s]")
 
+    t_eval = time.perf_counter()
     results = conditional_eval_llm(
         model, tokenizer,
         mu_grid=tuple(args.mu_grid),
@@ -161,10 +196,13 @@ def main():
         batch_size=args.batch_size or None,
         on_record=_checkpoint,
     )
+    print(f"\nEval loop wall time: {time.perf_counter() - t_eval:.2f}s")
 
+    t0 = time.perf_counter()
     final_pkl, final_json = _save(out_path, args, results,
                                   fallback_dir=fallback_dir)
-    print(f"\nWrote {final_pkl}")
+    print(f"Final save in {time.perf_counter() - t0:.2f}s")
+    print(f"Wrote {final_pkl}")
     print(f"Wrote {final_json}")
 
 
