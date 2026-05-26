@@ -1,6 +1,1 @@
-def main():
-    print("Hello from llm-probs!")
-
-
-if __name__ == "__main__":
-    main()
+"""Entry-point stub. Experiments live in `experiments.ipynb` and the `llm_prob` package."""
