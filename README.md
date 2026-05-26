@@ -18,4 +18,7 @@ The motivation comes directly from Large Language Models Are Bad Dice Players, w
 4. Compare hidden representations with the one of frontier LLMs on the same task. 
 
 
+## Ladder of steps to complete: 
 
+1. Overfit a single batch: take 8 examples, no dropout, train only that batch for a few hundred of steps: does loss go to zero? If not review architecture, optimizer etc. 
+2. Running on a tiny dataset: the model should memorize perfectly-> if not model capacity is too low

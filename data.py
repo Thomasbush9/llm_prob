@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from math import erf, sqrt
 
 import numpy as np
 import torch
@@ -250,10 +251,173 @@ class BinnedDistTokenizer:
         bins = self._bin(np.asarray(samples), self.value_range, self.num_value_bins)
         return (self.sample_offset + bins).astype(np.int64)
 
+    def decode_samples(self, tokens):
+        bins = np.asarray(tokens, dtype=np.int64) - self.sample_offset
+        valid = (0 <= bins) & (bins < self.num_value_bins)
+        centers = self.bin_centers()
+        decoded = np.full(bins.shape, np.nan, dtype=float)
+        decoded[valid] = centers[bins[valid]]
+        return decoded, valid
+
+    def bin_edges(self):
+        return np.linspace(self.value_range[0], self.value_range[1], self.num_value_bins + 1)
+
+    def bin_centers(self):
+        edges = self.bin_edges()
+        return 0.5 * (edges[:-1] + edges[1:])
+
     def encode_item(self, item):
         prefix = np.asarray(self.encode_spec(item), dtype=np.int64)
         samples = self.encode_samples(item["samples"])
         return np.concatenate([prefix, samples])
+
+    def spec_key(self, spec):
+        return tuple(self.encode_spec(spec)[:-1])
+
+
+@dataclass
+class DigitDistTokenizer:
+    '''LLM-like tokenizer that writes distribution params and samples as digits.
+
+    Each numeric field has fixed width, so batches can be stacked without padding:
+    `[TYPE] [MU1] +050.00 [SIGMA1] +010.00 ... [SAMPLES] +049.21 [SEP] ...`.
+    '''
+    value_range: tuple = (0.0, 100.0)
+    sigma_range: tuple = (1.0, 15.0)
+    w_range: tuple = (0.0, 1.0)
+    num_value_bins: int = 512
+    num_param_bins: int = 128
+    num_w_bins: int = 128
+    number_width: int = 7
+    decimals: int = 2
+
+    pad_token: int = 0
+    bos_token: int = 1
+    sep_token: int = 2
+    samples_token: int = 3
+    param_null_token: int = 4
+    uniform_token: int = 5
+    gaussian_token: int = 6
+    bimodal_token: int = 7
+    mu1_token: int = 8
+    sigma1_token: int = 9
+    mu2_token: int = 10
+    sigma2_token: int = 11
+    w_token: int = 12
+
+    @property
+    def char_tokens(self):
+        return {
+            "+": 13,
+            "-": 14,
+            ".": 15,
+            "0": 16,
+            "1": 17,
+            "2": 18,
+            "3": 19,
+            "4": 20,
+            "5": 21,
+            "6": 22,
+            "7": 23,
+            "8": 24,
+            "9": 25,
+        }
+
+    @property
+    def id_to_char(self):
+        return {token: char for char, token in self.char_tokens.items()}
+
+    @property
+    def vocab_size(self):
+        return 26
+
+    @property
+    def prefix_len(self):
+        return 1 + 5 * (1 + self.number_width) + 1
+
+    @property
+    def sample_token_width(self):
+        return self.number_width + 1
+
+    def _format_number(self, value):
+        value = float(np.clip(value, *self.value_range))
+        text = f"{value:+0{self.number_width}.{self.decimals}f}"
+        if len(text) != self.number_width:
+            raise ValueError(f"formatted value {text!r} does not match width {self.number_width}")
+        return text
+
+    def _encode_number(self, value):
+        return [self.char_tokens[char] for char in self._format_number(value)]
+
+    def _encode_null_number(self):
+        return [self.param_null_token] * self.number_width
+
+    def _field(self, name_token, value):
+        number = self._encode_null_number() if value is None else self._encode_number(value)
+        return [name_token] + number
+
+    def encode_spec(self, spec):
+        params = spec.get("params", {})
+        if spec["type"] == "UNIFORM":
+            values = (None, None, None, None, None)
+            type_token = self.uniform_token
+        elif spec["type"] == "GAUSSIAN":
+            values = (params["mu"], params["sigma"], None, None, None)
+            type_token = self.gaussian_token
+        elif spec["type"] == "BIMODAL":
+            values = (params["mu1"], params["sigma1"], params["mu2"], params["sigma2"], params["w"])
+            type_token = self.bimodal_token
+        else:
+            raise ValueError(f"unknown dist type: {spec['type']!r}")
+
+        tokens = [type_token]
+        for name_token, value in zip(
+            (self.mu1_token, self.sigma1_token, self.mu2_token, self.sigma2_token, self.w_token),
+            values,
+        ):
+            tokens.extend(self._field(name_token, value))
+        tokens.append(self.samples_token)
+        return tokens
+
+    def encode_samples(self, samples):
+        tokens = []
+        for sample in samples:
+            tokens.extend(self._encode_number(sample))
+            tokens.append(self.sep_token)
+        return np.asarray(tokens, dtype=np.int64)
+
+    def encode_item(self, item):
+        prefix = np.asarray(self.encode_spec(item), dtype=np.int64)
+        samples = self.encode_samples(item["samples"])
+        return np.concatenate([prefix, samples])
+
+    def decode_samples(self, tokens):
+        tokens = np.asarray(tokens, dtype=np.int64)
+        values = []
+        valid = []
+        for start in range(0, len(tokens), self.sample_token_width):
+            chunk = tokens[start:start + self.sample_token_width]
+            if len(chunk) < self.sample_token_width:
+                break
+            number_tokens = chunk[:self.number_width]
+            sep = chunk[-1]
+            text = "".join(self.id_to_char.get(int(token), "?") for token in number_tokens)
+            try:
+                value = float(text)
+                ok = sep == self.sep_token and self.value_range[0] <= value <= self.value_range[1]
+            except ValueError:
+                value = np.nan
+                ok = False
+            values.append(value if ok else np.nan)
+            valid.append(ok)
+        return np.asarray(values, dtype=float), np.asarray(valid, dtype=bool)
+
+    def bin_edges(self):
+        return np.linspace(self.value_range[0], self.value_range[1], self.num_value_bins + 1)
+
+    def bin_centers(self):
+        edges = self.bin_edges()
+        return 0.5 * (edges[:-1] + edges[1:])
 
     def spec_key(self, spec):
         return tuple(self.encode_spec(spec)[:-1])
@@ -289,6 +453,47 @@ def _continuous_samples_from_spec(spec, N, gen, support=(0.0, 100.0)):
         samples[~component_1] = _truncated_normal(params["mu2"], params["sigma2"], N - n1, support, gen)
         return samples
     raise ValueError(f"unknown dist type: {dist_type!r}")
+
+
+def _normal_cdf(x, mu, sigma):
+    z = (np.asarray(x, dtype=float) - mu) / (sigma * sqrt(2.0))
+    return np.vectorize(erf)(z) * 0.5 + 0.5
+
+
+def _truncated_normal_bin_probs(mu, sigma, edges):
+    lo, hi = edges[0], edges[-1]
+    normalizer = _normal_cdf(hi, mu, sigma) - _normal_cdf(lo, mu, sigma)
+    probs = np.diff(_normal_cdf(edges, mu, sigma)) / normalizer
+    return probs / probs.sum()
+
+
+def true_binned_probs(spec, tokenizer):
+    '''Target probability mass over tokenizer value bins for one distribution spec.'''
+    edges = tokenizer.bin_edges()
+    dist_type = spec["type"]
+    params = spec.get("params", {})
+    if dist_type == "UNIFORM":
+        probs = np.ones(len(edges) - 1, dtype=float)
+        return probs / probs.sum()
+    if dist_type == "GAUSSIAN":
+        return _truncated_normal_bin_probs(params["mu"], params["sigma"], edges)
+    if dist_type == "BIMODAL":
+        p1 = _truncated_normal_bin_probs(params["mu1"], params["sigma1"], edges)
+        p2 = _truncated_normal_bin_probs(params["mu2"], params["sigma2"], edges)
+        probs = params["w"] * p1 + (1.0 - params["w"]) * p2
+        return probs / probs.sum()
+    raise ValueError(f"unknown dist type: {dist_type!r}")
+
+
+def empirical_binned_probs(values, tokenizer, eps=1e-12):
+    valid_values = np.asarray(values, dtype=float)
+    valid_values = valid_values[np.isfinite(valid_values)]
+    if len(valid_values) == 0:
+        probs = np.ones(tokenizer.num_value_bins, dtype=float)
+        return probs / probs.sum()
+    counts, _ = np.histogram(valid_values, bins=tokenizer.bin_edges())
+    probs = counts.astype(float) + eps
+    return probs / probs.sum()
 
 
 def make_eval_specs(priors, n_specs, seed, tokenizer):

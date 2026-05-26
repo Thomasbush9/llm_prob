@@ -35,7 +35,19 @@ right split for the current binned baseline.
 
 ## Tokenization
 
-`BinnedDistTokenizer` maps a raw item into one token sequence:
+The main LLM-like condition now uses `DigitDistTokenizer`, which writes params
+and samples as fixed-width numeric strings:
+
+```text
+[TYPE] [MU1] +050.00 [SIGMA1] +010.00 [MU2] <null>... [SIGMA2] <null>... [W] <null>... [SAMPLES] +049.21 [SEP] ...
+```
+
+With the default `number_width=7`, each generated sample uses 8 tokens
+including `[SEP]`; `seq_len=512` therefore gives roughly 4k-token training
+contexts.
+
+The controlled baseline uses `BinnedDistTokenizer`, which maps a raw item into
+one token sequence:
 
 ```text
 [TYPE] [MU1] [SIGMA1] [MU2] [SIGMA2] [W] [BOS] x1 x2 ... xN
@@ -87,28 +99,30 @@ mask:   0 0 0 0 0 0 1 1 1 ... 1
 So the model is conditioned on distribution type and parameters, but trained
 only to predict samples.
 
-## Current Eval Metric
+## Current Eval Metrics
 
-The current metric is masked next-token cross entropy on held-out distribution
+The training metric is masked next-token cross entropy on held-out distribution
 configs:
 
 ```text
 CE = mean(-log p(label_t | input_<=t)) over sample-token positions only
 ```
 
-This checks whether the decoder assigns probability to the correct binned sample
-tokens under unseen distribution parameters.
+For the binned baseline, eval also reports oracle cross entropy under the true
+binned distribution, uniform cross entropy, and excess cross entropy.
 
-This is only a training/eval sanity metric. It is not yet the full scientific
-evaluation.
+Generation eval prompts the model with distribution parameters, samples a fixed
+number of outputs with configurable temperature/top-k, decodes them, and reports
+distributional metrics.
 
-## Planned Scientific Metrics
+## Scientific Metrics
 
-For generated sequences, we should add:
+For generated sequences, training reports:
 
-- distribution fit: empirical histogram vs target distribution, using JS/KL or Wasserstein distance;
-- moments: error in mean, variance, entropy, and modality statistics;
+- distribution fit: empirical histogram vs target distribution, using JS/KL, total variation, and Wasserstein distance;
+- moments: error in mean and variance;
 - independence: autocorrelation, duplicate/run statistics, and tests across repeated generations;
+- digit validity: invalid decode rate for digit-tokenized numbers;
 - generalization: same metrics on held-out parameter bins and longer sequence lengths.
 
 ## Inspecting A Batch

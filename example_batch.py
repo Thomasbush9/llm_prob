@@ -3,10 +3,30 @@ import json
 
 import numpy as np
 
-from data import BinnedDistStream, BinnedDistTokenizer, DistPriors, batch_from_items
+from data import BinnedDistStream, BinnedDistTokenizer, DigitDistTokenizer, DistPriors, batch_from_items
 
 
 def token_name(token, tokenizer):
+    if isinstance(tokenizer, DigitDistTokenizer):
+        special = {
+            tokenizer.pad_token: "PAD",
+            tokenizer.bos_token: "BOS",
+            tokenizer.sep_token: "SEP",
+            tokenizer.samples_token: "SAMPLES",
+            tokenizer.param_null_token: "PARAM_NULL",
+            tokenizer.uniform_token: "TYPE_UNIFORM",
+            tokenizer.gaussian_token: "TYPE_GAUSSIAN",
+            tokenizer.bimodal_token: "TYPE_BIMODAL",
+            tokenizer.mu1_token: "MU1",
+            tokenizer.sigma1_token: "SIGMA1",
+            tokenizer.mu2_token: "MU2",
+            tokenizer.sigma2_token: "SIGMA2",
+            tokenizer.w_token: "W",
+        }
+        if token in special:
+            return special[token]
+        return tokenizer.id_to_char.get(token, f"UNKNOWN_{token}")
+
     special = {
         tokenizer.pad_token: "PAD",
         tokenizer.bos_token: "BOS",
@@ -38,6 +58,7 @@ def to_jsonable(item):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--tokenizer", choices=("digit", "binned"), default="digit")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--seq-len", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
@@ -46,7 +67,8 @@ def main():
     parser.add_argument("--num-w-bins", type=int, default=8)
     args = parser.parse_args()
 
-    tokenizer = BinnedDistTokenizer(
+    tokenizer_cls = DigitDistTokenizer if args.tokenizer == "digit" else BinnedDistTokenizer
+    tokenizer = tokenizer_cls(
         num_value_bins=args.num_value_bins,
         num_param_bins=args.num_param_bins,
         num_w_bins=args.num_w_bins,
@@ -63,16 +85,30 @@ def main():
     full_sequences = [tokenizer.encode_item(item) for item in items]
 
     print("tokenizer")
-    print(
-        json.dumps(
+    tokenizer_info = {
+        "kind": args.tokenizer,
+        "vocab_size": tokenizer.vocab_size,
+        "prefix_len": tokenizer.prefix_len,
+    }
+    if isinstance(tokenizer, BinnedDistTokenizer):
+        tokenizer_info.update(
             {
-                "vocab_size": tokenizer.vocab_size,
-                "prefix_len": tokenizer.prefix_len,
                 "sample_offset": tokenizer.sample_offset,
                 "mu_offset": tokenizer.mu_offset,
                 "sigma_offset": tokenizer.sigma_offset,
                 "w_offset": tokenizer.w_offset,
-            },
+            }
+        )
+    else:
+        tokenizer_info.update(
+            {
+                "number_width": tokenizer.number_width,
+                "sample_token_width": tokenizer.sample_token_width,
+            }
+        )
+    print(
+        json.dumps(
+            tokenizer_info,
             indent=2,
         )
     )

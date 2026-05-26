@@ -43,19 +43,19 @@ class TransformerLayer(nnx.Module):
                  rng:nnx.Rngs=None,
                  **kwargs):
 
-        if hidden_dim % num_heads != 0:
-            raise ValueError("hidden_dim must be divisible by num_heads")
+        if in_dim % num_heads != 0:
+            raise ValueError("in_dim must be divisible by num_heads")
 
         self.in_dim = in_dim 
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
-        self.head_dim = hidden_dim // num_heads
+        self.head_dim = in_dim // num_heads
         self.use_rope = use_rope
 
-        self.linear_q = nnx.Linear(in_dim, hidden_dim, use_bias=use_bias, rngs=rng)
-        self.linear_k = nnx.Linear(in_dim, hidden_dim, use_bias=use_bias, rngs=rng)
-        self.linear_v = nnx.Linear(in_dim, hidden_dim, use_bias=use_bias, rngs=rng)
-        self.linear_out = nnx.Linear(hidden_dim, in_dim, use_bias=use_bias, rngs=rng)
+        self.linear_q = nnx.Linear(in_dim, in_dim, use_bias=use_bias, rngs=rng)
+        self.linear_k = nnx.Linear(in_dim, in_dim, use_bias=use_bias, rngs=rng)
+        self.linear_v = nnx.Linear(in_dim, in_dim, use_bias=use_bias, rngs=rng)
+        self.linear_out = nnx.Linear(in_dim, in_dim, use_bias=use_bias, rngs=rng)
         self.positional_encoding = PositionalEncoding(self.head_dim, theta=rope_theta)
 
         self.attn_layer_norm = nnx.LayerNorm(in_dim, use_bias=use_bias, rngs=rng)
@@ -74,9 +74,10 @@ class TransformerLayer(nnx.Module):
     def __call__(self, x, causal_mask=True, deterministic=False): 
         batch_size, seq_len, _ = x.shape
 
-        q = self.linear_q(x)
-        k = self.linear_k(x)
-        v = self.linear_v(x)
+        x_norm = self.attn_layer_norm(x)
+        q = self.linear_q(x_norm)
+        k = self.linear_k(x_norm)
+        v = self.linear_v(x_norm)
 
         q = q.reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
         k = k.reshape(batch_size, seq_len, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
@@ -97,11 +98,11 @@ class TransformerLayer(nnx.Module):
         x_attn = x_attn.reshape(x_attn.shape[0], x_attn.shape[1], -1)  # (batch, seq, hidden_dim)
         x_attn = self.linear_out(x_attn)
         x_attn = self.dropout(x_attn, deterministic=deterministic)
-        x = self.attn_layer_norm(x + x_attn)  # Add residual connection
+        x = x + x_attn
 
-        x_mlp = self.mlp(x)
+        x_mlp = self.mlp(self.mlp_layer_norm(x))
         x_mlp = self.dropout(x_mlp, deterministic=deterministic)
-        x = self.mlp_layer_norm(x + x_mlp)  # Add residual connection
+        x = x + x_mlp
 
         return x
 
