@@ -22,7 +22,53 @@ import argparse
 import json
 import os
 import pickle
+import tempfile
 from pathlib import Path
+
+
+SUMMARY_KEYS = ('mu_requested', 'sigma_requested', 'mu_observed',
+                'std_observed', 'parse_rate', 'malformed', 'n_clean',
+                'ks_stat', 'ks_pvalue')
+
+
+def _atomic_write_bytes(path: Path, data: bytes):
+    """Write `data` to `path` via a tmp file + rename on the same filesystem."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + '.', dir=str(path.parent))
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _save(out_path: Path, args, results, *, fallback_dir: Path | None = None):
+    """Save pickle + json sidecar. On OSError, retry under fallback_dir."""
+    payload = pickle.dumps({'args': vars(args), 'results': results})
+    summary = [{k: r[k] for k in SUMMARY_KEYS} for r in results]
+    summary_bytes = json.dumps(
+        {'args': vars(args), 'summary': summary}, indent=2,
+    ).encode()
+    summary_path = out_path.with_suffix(out_path.suffix + '.json')
+
+    try:
+        _atomic_write_bytes(out_path, payload)
+        _atomic_write_bytes(summary_path, summary_bytes)
+        return out_path, summary_path
+    except OSError as e:
+        if fallback_dir is None:
+            raise
+        fb_out = fallback_dir / out_path.name
+        fb_summary = fallback_dir / summary_path.name
+        print(f"!! save to {out_path} failed ({e}); falling back to {fb_out}")
+        _atomic_write_bytes(fb_out, payload)
+        _atomic_write_bytes(fb_summary, summary_bytes)
+        return fb_out, fb_summary
 
 
 def main():
@@ -45,13 +91,18 @@ def main():
                     help="passed to from_pretrained; 'auto' uses accelerate")
     args = ap.parse_args()
 
+    cache_dir = None
     if args.cache_dir:
-        cache_dir = str(Path(args.cache_dir).expanduser().resolve())
-        os.environ['HF_HOME'] = cache_dir
+        cache_dir = Path(args.cache_dir).expanduser().resolve()
+        os.environ['HF_HOME'] = str(cache_dir)
         os.environ.setdefault('HF_HUB_CACHE', f"{cache_dir}/hub")
 
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path = Path(args.out).expanduser().resolve()
+    fallback_dir = (cache_dir / 'llm_eval_runs') if cache_dir else None
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"!! cannot create {out_path.parent} ({e}); will use fallback")
 
     # Imports after env vars are set so HF picks them up.
     import torch
@@ -77,6 +128,13 @@ def main():
 
     print(f"\nRunning conditional eval: mu_grid={args.mu_grid}  sigma={args.sigma}  "
           f"n_runs={args.n_runs}  n_samples={args.n_samples}  mode={args.mode}\n")
+
+    def _checkpoint(_rec, results_so_far):
+        try:
+            _save(out_path, args, results_so_far, fallback_dir=fallback_dir)
+        except OSError as e:
+            print(f"!! checkpoint save failed ({e}); continuing in-memory")
+
     results = conditional_eval_llm(
         model, tokenizer,
         mu_grid=tuple(args.mu_grid),
@@ -85,21 +143,13 @@ def main():
         n_samples=args.n_samples,
         temperature=args.temperature,
         mode=args.mode,
+        on_record=_checkpoint,
     )
 
-    with open(out_path, 'wb') as f:
-        pickle.dump({'args': vars(args), 'results': results}, f)
-    print(f"\nWrote {out_path}")
-
-    summary = [{k: r[k] for k in
-                ('mu_requested', 'sigma_requested', 'mu_observed',
-                 'std_observed', 'parse_rate', 'malformed', 'n_clean',
-                 'ks_stat', 'ks_pvalue')}
-               for r in results]
-    summary_path = out_path.with_suffix(out_path.suffix + '.json')
-    with open(summary_path, 'w') as f:
-        json.dump({'args': vars(args), 'summary': summary}, f, indent=2)
-    print(f"Wrote {summary_path}")
+    final_pkl, final_json = _save(out_path, args, results,
+                                  fallback_dir=fallback_dir)
+    print(f"\nWrote {final_pkl}")
+    print(f"Wrote {final_json}")
 
 
 if __name__ == '__main__':

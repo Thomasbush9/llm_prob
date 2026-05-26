@@ -81,8 +81,13 @@ def generate_samples(model, tokenizer, mu, sigma, n_samples=10, *,
 def conditional_eval_llm(model, tokenizer, *,
                          mu_grid=(-2.5, -1.5, -0.5, 0.5, 1.5, 2.5),
                          sigma=1.0, n_runs=50, n_samples=10,
-                         temperature=1.0, mode='completion', verbose=True):
-    """Same record shape as eval.conditional_eval — plug into the same plots."""
+                         temperature=1.0, mode='completion', verbose=True,
+                         on_record=None):
+    """Same record shape as eval.conditional_eval — plug into the same plots.
+
+    `on_record(rec, results_so_far)` is invoked after each mu so callers can
+    checkpoint incrementally.
+    """
     results = []
     for mu in mu_grid:
         all_nums, malformed, raw_texts = [], 0, []
@@ -120,4 +125,6 @@ def conditional_eval_llm(model, tokenizer, *,
                   f"sigma_obs={rec['std_observed']:.3f}  "
                   f"parse={rec['parse_rate']:.1%}  bad={rec['malformed']}  "
                   f"KS={rec['ks_stat']:.3f}  n={rec['n_clean']}")
+        if on_record is not None:
+            on_record(rec, results)
     return results
